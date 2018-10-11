@@ -6,4 +6,5 @@ Os códigos estarão divididos em pastas por assunto.
 Meus dados de contato e linkedin estão logo abaixo, fique a vontade para entrar em contato.
 
 www.linkedin.com/in/leandroromualdo
+
 leandroromualdosilva@gmail.com
