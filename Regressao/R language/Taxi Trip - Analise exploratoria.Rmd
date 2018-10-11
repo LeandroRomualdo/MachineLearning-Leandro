@@ -1,0 +1,428 @@
+---
+title: "New York City Taxi Trip Duration"
+author: "Leandro Romualdo"
+date: "novembro de 2017"
+output: html_document
+---
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE, cache=TRUE, message=FALSE}
+rm(list = ls())
+
+# Libraries
+#install.packages("purrr")
+library(purrr)
+#install.packages("reshape")
+library(reshape)
+#install.packages("caret")
+library(caret)
+#install.packages("lubridate")
+library(lubridate)
+#install.packages("geosphere")
+library(geosphere)
+#install.packages("gridExtra")
+library(gridExtra)
+#install.packages("dplyr")
+library(dplyr)
+#install.packages("glm2")
+library(glm2)
+#install.packages("mvinfluence")
+library(mvinfluence)
+#install.packages("Ckmeans.1d.dp")
+library(Ckmeans.1d.dp)
+
+
+
+# Dataset
+setwd("\\Taxi Trip\\datasets")
+train <- read.csv("train.csv")
+test <- read.csv("test.csv")
+weather <- read.csv("weather_data_nyc_centralpark_2016.csv")
+accidents <- read.csv("accidents_2016.csv")
+```
+
+# Transforma coluna date do dataset weather em data no formato das demais datas dos datasets.
+# Cria nova coluna date no dataset accidents com formato sem hora, apenas data.
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+weather$date <- as.Date(weather$date, format = '%d-%m-%Y')
+accidents$date <- as.Date(accidents$datetime)
+
+```
+
+# Checandos dados NA's nos dataset's.
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+
+# Train
+miss_pct <- map_dbl(train, function(x) { round((sum(is.na(x)) / length(x)) * 100, 1) })
+miss_pct <- miss_pct[miss_pct > 0]
+
+data.frame(miss=miss_pct, var=names(miss_pct), row.names=NULL) %>%
+    ggplot(aes(x=reorder(var, -miss), y=miss)) + 
+    geom_bar(stat='identity', fill='red') +
+    labs(x='', y='% missing', title='Percent missing data by feature dataset Train') +
+    theme(axis.text.x=element_text(angle=90, hjust=1))
+
+#Test
+miss_pct <- map_dbl(test, function(x) { round((sum(is.na(x)) / length(x)) * 100, 1) })
+miss_pct <- miss_pct[miss_pct > 0]
+
+data.frame(miss=miss_pct, var=names(miss_pct), row.names=NULL) %>%
+    ggplot(aes(x=reorder(var, -miss), y=miss)) + 
+    geom_bar(stat='identity', fill='red') +
+    labs(x='', y='% missing', title='Percent missing data by feature dataset test') +
+    theme(axis.text.x=element_text(angle=90, hjust=1))
+
+# Accidents
+miss_pct <- map_dbl(accidents, function(x) { round((sum(is.na(x)) / length(x)) * 100, 1) })
+miss_pct <- miss_pct[miss_pct > 0]
+
+data.frame(miss=miss_pct, var=names(miss_pct), row.names=NULL) %>%
+    ggplot(aes(x=reorder(var, -miss), y=miss)) + 
+    geom_bar(stat='identity', fill='red') +
+    labs(x='', y='% missing', title='Percent missing data by feature dataset accidents') +
+    theme(axis.text.x=element_text(angle=90, hjust=1))
+
+# Weather
+miss_pct <- map_dbl(weather, function(x) { round((sum(is.na(x)) / length(x)) * 100, 1) })
+miss_pct <- miss_pct[miss_pct > 0]
+
+data.frame(miss=miss_pct, var=names(miss_pct), row.names=NULL) %>%
+    ggplot(aes(x=reorder(var, -miss), y=miss)) + 
+    geom_bar(stat='identity', fill='red') +
+    labs(x='', y='% missing', title='Percent missing data by feature dataset weather') +
+    theme(axis.text.x=element_text(angle=90, hjust=1))
+
+
+# Elimina linhas com NA do dataset accidents 
+accidents <- na.omit(accidents)
+```
+
+# Filtra colunas do dataset Accident
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE }
+
+# Elimina colunas desnecessárias no dataset Accidents
+accidents <- subset(accidents, select =  c("BOROUGH", "LATITUDE", "LONGITUDE", "ON.STREET.NAME", "NUMBER.OF.PERSONS.INJURED","NUMBER.OF.PERSONS.KILLED", "datetime", "date"))
+
+colnames(accidents) <-c("BOROUGH", "LATITUDE", "LONGITUDE", "ON.STREET.NAME", "NUMBER.OF.PERSONS.INJURED","NUMBER.OF.PERSONS.KILLED", "DATETIME", "DATE")
+
+```
+
+
+# Analise Exploratória.
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+dados <- train
+dados$passenger_count <- as.numeric(dados$passenger_count)
+dados$pickup_longitude <- as.numeric(dados$pickup_longitude)
+dados$pickup_latitude <- as.numeric(dados$pickup_latitude)
+dados$trip_duration <- as.numeric(dados$trip_duration)
+dados$dropoff_latitude <- as.numeric(dados$dropoff_latitude)
+dados$dropoff_longitude <- as.numeric(dados$dropoff_longitude)
+
+# One Hot Encoding. Cria variaveis numericas para melhro desempenho.
+dados$store_fwd_flag_Y <- ifelse(train$store_and_fwd_flag == 'Y', 1, 0)
+dados$store_fwd_flag_N <- ifelse(train$store_and_fwd_flag == 'N', 1, 0)
+
+# Cria variavel com distancia em KM do local para o acidente.
+dados$Accident_km <- distHaversine(matrix(c(dados$pickup_longitude, dados$pickup_latitude), ncol = 2),
+                          matrix(c(accidents$LONGITUDE, accidents$LATITUDE ), ncol = 2))/1000
+
+# Cria variavel com a distancia da corrida.
+dados$km <-distHaversine(matrix(c(dados$pickup_longitude, dados$pickup_latitude), ncol = 2),
+                          matrix(c(dados$dropoff_longitude, dados$dropoff_latitude ), ncol = 2))/1000
+
+# Cria variaveis com hora, semana, mes, dia da semana e variavel binária se é final de semana ou não.
+dados$date <- as.Date(dados$pickup_datetime)
+
+dados$phour <- hour(dados$pickup_datetime)
+dados$pweek <- week(dados$pickup_datetime)
+dados$pmonth <- month(dados$pickup_datetime)
+dados$pweekday <- wday(dados$date)
+dados$weekday <- weekdays(dados$date)
+dados$pweekend <- sapply(dados$weekday, switch,
+                         "domingo" = 1,
+                         "sábado" = 1,
+                         "segunda-feira" = 0,
+                         "terça-feira" = 0,
+                         "quarta-feira" = 0,
+                         "quinta-feira" = 0,
+                         "sexta-feira" = 0)
+
+# Hot Encoding Weekdend 
+dados$weekend_Y <- ifelse(dados$pweekend == 1, 1.0, 0.1)
+dados$weekend_N <- ifelse(dados$pweekend == 0, 1.0, 0.1)
+
+
+# Retira Letra T das colunas abaixo e transforma em 0.0.
+weather$precipitation <- ifelse(weather$precipitation == "T", 0.0, weather$precipitation)
+weather$snow.fall <- ifelse(weather$snow.fall == "T", 0.0, weather$snow.fall)
+weather$snow.depth <- ifelse(weather$snow.depth == "T", 0.0, weather$snow.depth)
+
+dados <- dados[c("vendor_id", "passenger_count", "pickup_longitude", "pickup_latitude", "dropoff_longitude", "dropoff_latitude", "trip_duration", "Accident_km", "km", "phour", "pweek","pmonth", "pweekday", "pweekend", "date", "weekday", "weekend_Y", "weekend_N")]
+
+```
+
+# Test
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+#Dataset de test
+test$passenger_count <- as.numeric(test$passenger_count)
+test$pickup_longitude <- as.numeric(test$pickup_longitude)
+test$pickup_latitude <- as.numeric(test$pickup_latitude)
+test$dropoff_latitude <- as.numeric(test$dropoff_latitude)
+test$dropoff_longitude <- as.numeric(test$dropoff_longitude)
+
+# One Hot Encoding. Cria variaveis numericas para melhro desempenho.
+test$store_fwd_flag_Y <- ifelse(test$store_and_fwd_flag == 'Y', 1, 0)
+test$store_fwd_flag_N <- ifelse(test$store_and_fwd_flag == 'N', 1, 0)
+
+# Cria variavel com distancia em KM do local para o acidente.
+test$Accident_km <- distHaversine(matrix(c(test$pickup_longitude, test$pickup_latitude), ncol = 2),
+                          matrix(c(accidents$LONGITUDE, accidents$LATITUDE ), ncol = 2))/1000
+
+# Cria variavel com a distancia da corrida.
+test$km <-distHaversine(matrix(c(test$pickup_longitude, test$pickup_latitude), ncol = 2),
+                          matrix(c(test$dropoff_longitude, test$dropoff_latitude ), ncol = 2))/1000
+
+# Cria variaveis com hora, semana, mes, dia da semana e variavel binária se é final de semana ou não.
+test$date <- as.Date(test$pickup_datetime)
+
+test$phour <- hour(test$pickup_datetime)
+test$pweek <- week(test$pickup_datetime)
+test$pmonth <- month(test$pickup_datetime)
+test$pweekday <- wday(test$date)
+test$weekday <- weekdays(test$date)
+test$pweekend <- sapply(test$weekday, switch,
+                         "domingo" = 1,
+                         "sábado" = 1,
+                         "segunda-feira" = 0,
+                         "terça-feira" = 0,
+                         "quarta-feira" = 0,
+                         "quinta-feira" = 0,
+                         "sexta-feira" = 0)
+
+# Hot Encoding Weekdend 
+test$weekend_Y <- ifelse(test$pweekend == 1, 1.0, 0.1)
+test$weekend_N <- ifelse(test$pweekend == 0, 1.0, 0.1)
+
+```
+
+# Merge dos datasets dados e weather.
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+
+dataset <- merge(dados, weather, by.x = "date", by.y = "date")
+dataset$date <- NULL
+
+test <- merge(test, weather, by.x = "date", by.y = "date")
+test$date <- NULL
+
+```
+
+
+# Apresentação das Variaveis 
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+
+dadosGeo <- c("pickup_longitude", "pickup_latitude","dropoff_longitude", "dropoff_latitude","Accident_km","km")
+dadosTemporais <- c("trip_duration","phour", "pweek", "pmonth", "pweekday", "pweekend", "weekday")
+dadosClima <- c("maximum.temperature", "minimum.temperature", "average.temperature", "precipitation","snow.fall", "snow.depth")
+dadosTrip <- c("vendor_id","passenger_count", "store_fwd_flag_Y", "store_fwd_flag_N")
+
+
+dadosGeo <- as.data.frame(dadosGeo)
+dadosTemporais <- as.data.frame(dadosTemporais)
+dadosClima <- as.data.frame(dadosClima)
+dadosTrip <- as.data.frame(dadosTrip)
+
+print(dadosGeo) 
+print(dadosTemporais)
+print(dadosClima)
+print(dadosTrip)
+
+
+```
+
+
+
+# Matriz de Correlação.
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+dataset2 <- dataset
+dataset2$weekday <- NULL
+cor <- cor(dataset2)
+
+#cor
+
+cormatrix <- round(cor, digits = 2)
+melted_cormat <- melt(cormatrix)
+
+qplot(x=X1, y=X2, data=melted_cormat, use="p", fill=value, geom="tile") + scale_fill_gradient2(limits=c(-1,1))
+```
+
+
+# Analise Exploratória
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+par(mfrow=c(1,2))
+hist(dataset$passenger_count,main="passenger counts",col="blue")
+hist(dataset$pickup_longitude,main="pickup logitude",col="blue")
+hist(dataset$pickup_latitude,main="pickup latitude",col="blue")
+hist(dataset$dropoff_longitude,main="dropoff longitude",col="blue")
+hist(dataset$dropoff_latitude,main="dropoff latitude",col="blue")
+hist(dataset$trip_duration,main="trip duration",col="blue")
+hist(dataset$Accident_km, main = "Accident KM", col = "blue")
+hist(dataset$km, main = "Trip KM", col = "blue")
+hist(dataset$phour, main = "Trip Hour", col = "blue")
+hist(dataset$pweek, main = "Trip Week", col = "blue")
+hist(dataset$pmonth, main = "Trip month", col = "blue")
+hist(dataset$pweekday, main = "Trip weekday", col = "blue")
+hist(dataset$pweekend, main = "Trip weekend", col = "blue")
+hist(dataset$weekend_Y, main = "Weekend Yes", col = "blue")
+hist(dataset$weekend_N, main = "Weekend No", col = "blue")
+
+```
+
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+p1 <- dataset %>% 
+  ggplot(aes(x=trip_duration)) + 
+  geom_histogram(bins=40000, fill="blue")+
+  theme_bw()+theme(axis.title = element_text(size=12),axis.text = element_text(size=12))+
+  ylab("Density")+coord_cartesian(x=c(0,6000))
+
+p2 <- dataset %>% 
+  ggplot(aes(x=passenger_count)) + 
+  geom_histogram(bins=20, fill="red")+
+  theme_bw()+theme(axis.title = element_text(size=12),axis.text = element_text(size=12))+
+  ylab("Density")+coord_cartesian(x=c(0,10))
+
+grid.arrange(p1, p2, ncol = 2)
+```
+
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+pass = dataset %>% 
+  group_by(passenger_count) %>%
+  count() %>%
+  ggplot(aes(x=passenger_count,y=n, fill=passenger_count)) +
+  geom_col() +
+  theme(legend.position = "none")
+
+vendor = dataset %>% 
+  group_by(vendor_id) %>%
+  count() %>%
+  ggplot(aes(x=vendor_id,y=n,fill=vendor_id)) +
+  geom_col() +
+  theme(legend.position = "none")
+
+grid.arrange(pass, vendor, ncol = 2)
+```
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+p1 <- dataset %>%
+  group_by(weekday) %>%
+  summarise(km = mean(km)) %>%
+  ggplot(aes(weekday, km), color = km) +
+  geom_jitter(width = 0.10, size = 3) +
+  labs(x = "Weekday", y = "Trip km")
+
+p2 <- dataset %>%
+  group_by(weekday) %>%
+  summarise(trip = mean(trip_duration)) %>%
+  ggplot(aes(weekday, trip), color = trip) +
+  geom_jitter(width = 0.10, size = 3) +
+  labs(x = "Weekday", y = "Trip Duration")
+
+grid.arrange(p1, p2, ncol = 1)
+
+```
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+p1 <- dataset %>%
+  group_by(pmonth) %>%
+  summarise(km = mean(km)) %>%
+  ggplot(aes(pmonth, km), color = km) +
+  geom_jitter(width = 0.04, size = 3) +
+  labs(x = "Month", y = "Trip km")
+
+p2 <- dataset %>%
+  group_by(pmonth) %>%
+  summarise(trip = mean(trip_duration)) %>%
+  ggplot(aes(pmonth, trip), color = trip) +
+  geom_jitter(width = 0.04, size = 3) +
+  labs(x = "Month", y = "Trip Duration")
+
+grid.arrange(p1, p2, ncol = 1)
+```
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+p1 <- dataset %>%
+  group_by(phour) %>%
+  summarise(km = mean(km)) %>%
+  ggplot(aes(phour, km), color = km) +
+  geom_jitter(width = 0.04, size = 3) +
+  labs(x = "Hour", y = "Trip km")
+
+p2 <- dataset %>%
+  group_by(phour) %>%
+  summarise(trip = mean(trip_duration)) %>%
+  ggplot(aes(phour, trip), color = trip) +
+  geom_jitter(width = 0.04, size = 3) +
+  labs(x = "Hour", y = "Trip Duration")
+
+
+grid.arrange(p1, p2, ncol = 1)
+```
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+p1 <- dataset %>%
+  group_by(pweek) %>%
+  summarise(trip = mean(trip_duration)) %>%
+  ggplot(aes(pweek, trip), color = trip) +
+  geom_jitter(width = 0.04, size = 3) +
+  labs(x = "Week", y = "Trip Duration")
+
+p2 <- dataset %>%
+  group_by(pweek) %>%
+  summarise(km = mean(km)) %>%
+  ggplot(aes(pweek, km), color = km) +
+  geom_jitter(width = 0.04, size = 3) +
+  labs(x = "Week", y = "Trip KM")
+
+grid.arrange(p1, p2, ncol = 1)
+```
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+dataset %>%
+  group_by(passenger_count) %>%
+  summarise(trip = mean(trip_duration)) %>%
+  ggplot(aes(passenger_count, trip), color = trip) +
+  geom_jitter(width = 0.04, size = 3) +
+  labs(x = "Passenger Count", y = "Trip Duration")
+
+```
+
+
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+ggplot(dataset,aes(dataset$pickup_longitude,dataset$pickup_latitude)) + geom_point(aes(colour=dataset$passenger_count),size=3,alpha=0.8)+geom_smooth(method="lm",se=FALSE,aes(group=dataset$passenger_count))
+
+
+ggplot(dataset,aes(dataset$dropoff_longitude,dataset$dropoff_latitude)) + geom_point(aes(colour=dataset$passenger_count),size=3,alpha=0.8)+geom_smooth(method="lm",se=FALSE,aes(group=dataset$passenger_count))
+
+```
+
+
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+ggplot(dataset,aes(dataset$pickup_longitude,dataset$pickup_latitude)) + geom_point(aes(colour=dataset$vendor_id),size=3,alpha=0.8)+geom_smooth(method="lm",se=FALSE,aes(group=dataset$vendor_id))
+
+
+ggplot(dataset,aes(dataset$dropoff_longitude,dataset$dropoff_latitude)) + geom_point(aes(colour=dataset$vendor_id),size=3,alpha=0.8)+geom_smooth(method="lm",se=FALSE,aes(group=dataset$vendor_id))
+
+```
+
+

@@ -1,0 +1,333 @@
+---
+title: "Modelos"
+author: "Leandro Romualdo"
+date: "30 de novembro de 2017"
+output: html_document
+---
+
+
+# Desenvolvimento do Modelo.
+
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE, cache=TRUE, message=FALSE}
+#rm(list = ls())
+
+# Libraries
+#install.packages("purrr")
+library(purrr)
+#install.packages("reshape")
+library(reshape)
+#install.packages("caret")
+library(caret)
+#install.packages("lubridate")
+library(lubridate)
+#install.packages("geosphere")
+library(geosphere)
+#install.packages("gridExtra")
+library(gridExtra)
+#install.packages("dplyr")
+library(dplyr)
+#install.packages("glm2")
+library(glm2)
+#install.packages("mvinfluence")
+library(mvinfluence)
+#install.packages("Ckmeans.1d.dp")
+library(Ckmeans.1d.dp)
+#install.packages("e1071")
+library(e1071)
+
+
+
+# Dataset
+setwd("\\Taxi Trip\\Datasets\\")
+train <- read.csv("train.csv")
+test <- read.csv("test.csv")
+weather <- read.csv("weather_data_nyc_centralpark_2016.csv")
+accidents <- read.csv("accidents_2016.csv")
+```
+
+# Transforma coluna date do dataset weather em data no formato das demais datas dos datasets.
+# Cria nova coluna date no dataset accidents com formato sem hora, apenas data.
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+weather$date <- as.Date(weather$date, format = '%d-%m-%Y')
+accidents$date <- as.Date(accidents$datetime)
+
+```
+
+# Checandos dados NA's nos dataset's.
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+# Elimina linhas com NA do dataset accidents 
+accidents <- na.omit(accidents)
+```
+
+# Filtra colunas do dataset Accident
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE }
+
+# Elimina colunas desnecessárias no dataset Accidents
+accidents <- subset(accidents, select =  c("BOROUGH", "LATITUDE", "LONGITUDE", "ON.STREET.NAME", "NUMBER.OF.PERSONS.INJURED","NUMBER.OF.PERSONS.KILLED", "datetime", "date"))
+
+colnames(accidents) <-c("BOROUGH", "LATITUDE", "LONGITUDE", "ON.STREET.NAME", "NUMBER.OF.PERSONS.INJURED","NUMBER.OF.PERSONS.KILLED", "DATETIME", "DATE")
+
+```
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+dados <- train
+dados$passenger_count <- as.numeric(dados$passenger_count)
+dados$pickup_longitude <- as.numeric(dados$pickup_longitude)
+dados$pickup_latitude <- as.numeric(dados$pickup_latitude)
+dados$trip_duration <- as.numeric(dados$trip_duration)
+dados$dropoff_latitude <- as.numeric(dados$dropoff_latitude)
+dados$dropoff_longitude <- as.numeric(dados$dropoff_longitude)
+
+# One Hot Encoding. Cria variaveis numericas para melhro desempenho.
+dados$store_fwd_flag_Y <- ifelse(train$store_and_fwd_flag == 'Y', 1, 0)
+dados$store_fwd_flag_N <- ifelse(train$store_and_fwd_flag == 'N', 1, 0)
+
+# Cria variavel com distancia em KM do local para o acidente.
+dados$Accident_km <- distHaversine(matrix(c(dados$pickup_longitude, dados$pickup_latitude), ncol = 2),
+                          matrix(c(accidents$LONGITUDE, accidents$LATITUDE ), ncol = 2))/1000
+
+# Cria variavel com a distancia da corrida.
+dados$km <-distHaversine(matrix(c(dados$pickup_longitude, dados$pickup_latitude), ncol = 2),
+                          matrix(c(dados$dropoff_longitude, dados$dropoff_latitude ), ncol = 2))/1000
+
+# Cria variaveis com hora, semana, mes, dia da semana e variavel binária se é final de semana ou não.
+dados$date <- as.Date(dados$pickup_datetime)
+
+dados$phour <- hour(dados$pickup_datetime)
+dados$pweek <- week(dados$pickup_datetime)
+dados$pmonth <- month(dados$pickup_datetime)
+dados$pweekday <- wday(dados$date)
+dados$weekday <- weekdays(dados$date)
+dados$pweekend <- sapply(dados$weekday, switch,
+                         "domingo" = 1,
+                         "sábado" = 1,
+                         "segunda-feira" = 0,
+                         "terça-feira" = 0,
+                         "quarta-feira" = 0,
+                         "quinta-feira" = 0,
+                         "sexta-feira" = 0)
+
+# Hot Encoding Weekdend 
+dados$weekend_Y <- ifelse(dados$pweekend == 1, 1.0, 0.1)
+dados$weekend_N <- ifelse(dados$pweekend == 0, 1.0, 0.1)
+
+
+# Retira Letra T das colunas abaixo e transforma em 0.0.
+weather$precipitation <- ifelse(weather$precipitation == "T", 0.0, weather$precipitation)
+weather$snow.fall <- ifelse(weather$snow.fall == "T", 0.0, weather$snow.fall)
+weather$snow.depth <- ifelse(weather$snow.depth == "T", 0.0, weather$snow.depth)
+
+dados <- dados[c("vendor_id", "passenger_count", "pickup_longitude", "pickup_latitude", "dropoff_longitude", "dropoff_latitude", "trip_duration", "Accident_km", "km", "phour", "pweek","pmonth", "pweekday", "pweekend", "date", "weekday", "weekend_Y", "weekend_N")]
+
+```
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+#Dataset de test
+test$passenger_count <- as.numeric(test$passenger_count)
+test$pickup_longitude <- as.numeric(test$pickup_longitude)
+test$pickup_latitude <- as.numeric(test$pickup_latitude)
+test$dropoff_latitude <- as.numeric(test$dropoff_latitude)
+test$dropoff_longitude <- as.numeric(test$dropoff_longitude)
+
+# One Hot Encoding. Cria variaveis numericas para melhro desempenho.
+test$store_fwd_flag_Y <- ifelse(test$store_and_fwd_flag == 'Y', 1, 0)
+test$store_fwd_flag_N <- ifelse(test$store_and_fwd_flag == 'N', 1, 0)
+
+# Cria variavel com distancia em KM do local para o acidente.
+test$Accident_km <- distHaversine(matrix(c(test$pickup_longitude, test$pickup_latitude), ncol = 2),
+                          matrix(c(accidents$LONGITUDE, accidents$LATITUDE ), ncol = 2))/1000
+
+# Cria variavel com a distancia da corrida.
+test$km <-distHaversine(matrix(c(test$pickup_longitude, test$pickup_latitude), ncol = 2),
+                          matrix(c(test$dropoff_longitude, test$dropoff_latitude ), ncol = 2))/1000
+
+# Cria variaveis com hora, semana, mes, dia da semana e variavel binária se é final de semana ou não.
+test$date <- as.Date(test$pickup_datetime)
+
+test$phour <- hour(test$pickup_datetime)
+test$pweek <- week(test$pickup_datetime)
+test$pmonth <- month(test$pickup_datetime)
+test$pweekday <- wday(test$date)
+test$weekday <- weekdays(test$date)
+test$pweekend <- sapply(test$weekday, switch,
+                         "domingo" = 1,
+                         "sábado" = 1,
+                         "segunda-feira" = 0,
+                         "terça-feira" = 0,
+                         "quarta-feira" = 0,
+                         "quinta-feira" = 0,
+                         "sexta-feira" = 0)
+
+# Hot Encoding Weekdend 
+test$weekend_Y <- ifelse(test$pweekend == 1, 1.0, 0.1)
+test$weekend_N <- ifelse(test$pweekend == 0, 1.0, 0.1)
+
+```
+
+
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+# Merge dos datasets dados e weather.
+dataset <- merge(dados, weather, by.x = "date", by.y = "date")
+dataset$date <- NULL
+
+test <- merge(test, weather, by.x = "date", by.y = "date")
+test$date <- NULL
+
+```
+
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+# Divide em treino e teste 70 / 30
+dataset$weekday <- NULL
+
+size_smp <- floor(0.70 * nrow(dataset))
+set.seed(123456)
+train_ind <- sample(seq_len(nrow(dataset)), size = size_smp)
+tr <- dataset[train_ind,]
+tst <- dataset[-train_ind,]
+```
+
+
+# SVM
+
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+trt <- dataset[1:300000 ,]
+
+model <- svm(trip_duration ~., data = trt)
+
+x <- subset(trt, select = -trip_duration)
+y <- trip_duration
+
+svm.model <- svm(x, y)
+
+print(svm.model)
+summary(svm.model)
+
+pred <- predict(svm.model, x)
+pred <- fitted(svm.model)
+error <- tr$trip_duration - pred
+svm.error <- sqrt(mean(error^2)) 
+
+tune.model <- tune(svm, trip_duration~., data = tr,
+            ranges = list(epsilon = seq(0,1,0.01), cost = 2^(2:9))
+)
+print(tune.model)
+
+best.mod <- tune.model$best.model
+best.mod_pred <- predict(best.mod, tst)
+
+error_best.model <- trt$trip_duration - best.mod_pred
+
+best_mod.rmse <- sqrt(mean(error_best.model^2))
+
+```
+
+
+# XgBoost 
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+library(xgboost)
+n_row <- nrow(train)
+n_col <- ncol(dataset)
+max_row <- nrow(dataset)
+
+
+m_train <- dataset[1:n_row,]
+mcor <- cor(m_train)
+
+x_train <- dataset[1:n_row,1:n_col-1]
+y_train <- dataset[1:n_row, n_col]
+x_test <- dataset[(n_row+1):max_row,1:n_col-1]
+
+train.m <- xgb.DMatrix(as.matrix(x_train), label=y_train)
+test.m <- xgb.DMatrix(as.matrix(x_test))
+
+start<-proc.time()
+xgb_params = list(
+  seed = 45569,
+  colsample_bytree = 0.7,
+  subsample = 0.8,
+  eta = 0.1,
+  objective = 'reg:linear',
+  max_depth = 4,
+  max_delta_step = 2,
+  min_child_weight = 1
+)
+res = xgb.cv(xgb_params,
+             train.m,
+             nrounds=500,              
+             nfold=10,                   
+             early_stopping_rounds=10,
+             print_every_n=100,
+             verbose=2,
+             eval_metric = "rmse",
+             maximize=FALSE)
+print("Total runtime:")
+print(proc.time()-start)
+print(res)
+
+best_nrounds = res$best_iteration
+gbdt = xgb.train(xgb_params, train.m, best_nrounds)
+pred = predict(gbdt,test.m)
+
+importance_matrix <- xgb.importance(names(dataset), model = gbdt)
+importance_matrix$Gain <- importance_matrix$Gain * 100
+View(importance_matrix)
+
+xgb.ggplot.importance(importance_matrix = importance_matrix)
+xgb.plot.deepness(model = gbdt)
+
+
+```
+
+
+# Multiple Regression Model
+
+```{r, echo=FALSE, error=FALSE, warning=FALSE, comment=FALSE}
+
+lr.model <- lm(formula = trip_duration ~ vendor_id+ passenger_count + pickup_longitude + pickup_latitude + dropoff_longitude + dropoff_latitude + Accident_km + km + phour + pweek + pmonth + pweekday + pweekend + maximum.temperature + minimum.temperature + precipitation + snow.fall + snow.depth + weekend_N + weekend_Y, data = tr)
+
+summary(lr.model)
+# Analise de residuos
+influenceIndexPlot(lr.model, vars = c("Cook", "hat"), id.n = 3)
+
+# Intervalo de confiança
+confint(lr.model, level = 0.95)
+#Distribuição exponencial 
+exp(lr.model$coefficients)
+
+exp(cbind(OR = coef(lr.model), confint(lr.model)))
+
+tst$pred <- predict(lr.model, newdata = tst)
+
+# RMSE   3114.1
+lr.predict <- predict(lr.model, tst)
+lr.error <- tst$trip_duration - tst$pred
+lr.RMSE <- sqrt(mean((lr.error)^2))
+lr.RMSE
+
+# MAE   449.9
+lr.predictMAE <- mean(abs(lr.error))
+lr.predictMAE
+
+# e^2  4.24 
+pred <- predict(lr.model, newdata = tst)
+e <- tst$trip_duration - tst$pred
+sum(e^2)
+
+```
+
+
+```{r}
+var(lr.model)
+var(gbdt)
+var(best.mod)
+
+```
+
