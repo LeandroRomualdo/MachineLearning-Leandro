@@ -1,0 +1,1 @@
+Descompactar arquivos de treino e teste, e definir o caminho dos arquivos com o seu diretorio no setwd do codigo R.
